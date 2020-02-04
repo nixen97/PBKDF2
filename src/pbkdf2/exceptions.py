@@ -1,0 +1,3 @@
+
+class KeyTooLongException(Exception):
+    pass
