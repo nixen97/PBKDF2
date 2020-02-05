@@ -1,6 +1,8 @@
 from typing import Union
 from math import ceil
 from base64 import b64encode, b64decode
+import hashlib
+from secrets import randbelow, token_bytes
 
 from pbkdf2.exceptions import KeyTooLongException
 
@@ -11,7 +13,8 @@ def byte_xor(a, b):
 
 
 class PBKDF2:
-    PSEUDO_RANDOM_OUT = 4
+    # RFC 2898
+    PSEUDO_RANDOM_OUT = 32
     MAX_KEYSIZE = (2**32 - 1) * PSEUDO_RANDOM_OUT # (2^32 - 1) * hLen
 
     def __init__(
@@ -19,13 +22,22 @@ class PBKDF2:
         password : string,
         salt : string = None,
         iterations : int = None,
-        outlength : int = 128
+        outlength : int = 64
     ):
+        if salt is None:
+            salt = token_bytes(16)
+
+        if iterations is None:
+            iterations = 29000 + randbelow(1000)
+
         if isinstance(password, str):
             password = password.encode()
 
         if isinstance(salt, str):
             salt = salt.encode()
+
+        self.salt = salt
+        self.iterations = iterations
 
         if outlength > self.MAX_KEYSIZE:
             raise KeyTooLongException
@@ -35,10 +47,10 @@ class PBKDF2:
         self.digest = b""
 
         for i in range(1, self.num_blocks + 1):
-            self.digest +=  self.F(
+            self.digest += self.F(
                 password,
-                salt,
-                iterations,
+                self.salt,
+                self.iterations,
                 i
             )
 
@@ -46,15 +58,23 @@ class PBKDF2:
 
         self.digest = self.digest[:outlength]
 
-        self.digest = b64encode(self.digest)
+    def Hash(self):
+        return "PBKDF2_SHA256$" + str(self.iterations) + "$" + b64encode(self.salt).decode() + "$" + self.GetB64().decode()
 
     def GetBytes(self):
         return self.digest
 
-    @staticmethod
-    def F(P : bytes, S : bytes, c : int, i : int) -> bytes:
-        assert i <= PBKDF2.MAX_KEYSIZE
-        out = PBKDF2.PRF(P, S + i.to_bytes(4, "big"))
+    def GetB64(self):
+        return b64encode(self.digest)
+
+    def GetHex(self):
+        return self.digest.hex()
+
+    @classmethod
+    def F(cls, P : bytes, S : bytes, c : int, i : int) -> bytes:
+        assert i <= cls.MAX_KEYSIZE
+
+        out = cls.PRF(P, S + i.to_bytes(4, "big"))
 
         for j in range(1, c+1):
             out = byte_xor(
@@ -64,15 +84,26 @@ class PBKDF2:
 
         return out
 
-    @staticmethod
-    def PRF(P : bytes, K : bytes) -> bytes:
-        return b"test"
-
-    @staticmethod
-    def HMAC() -> bytes:
+    @classmethod
+    def PRF(cls, P : bytes, K : bytes) -> bytes:
         # RFC 2104
-        pass
+        ipad = b"\x36"*cls.PSEUDO_RANDOM_OUT
+        opad = b"\x5C"*cls.PSEUDO_RANDOM_OUT
 
-    @staticmethod
-    def H(msg : bytes) -> bytes:
-        return msg
+        if len(K) < cls.PSEUDO_RANDOM_OUT:
+            K = K + b"\x00"*(cls.PSEUDO_RANDOM_OUT - len(K))
+
+        if len(K) > cls.PSEUDO_RANDOM_OUT:
+            K = cls.H(K)
+
+        return cls.H(
+            byte_xor(K, opad) + cls.H(
+                byte_xor(K, ipad) + P
+            )
+        )
+
+    @classmethod
+    def H(cls, msg : bytes) -> bytes:
+        h = hashlib.sha256()
+        h.update(msg)
+        return h.digest()
